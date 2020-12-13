@@ -15,14 +15,28 @@
  */
 package net.jodah.failsafe;
 
-import java.lang.reflect.Field;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicReference;
-
 import net.jodah.failsafe.function.CheckedRunnable;
+import net.jodah.failsafe.function.CheckedSupplier;
+import net.jodah.failsafe.internal.CircuitBreakerInternals;
 import net.jodah.failsafe.internal.CircuitState;
 
+import java.lang.reflect.Field;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
 public class Testing {
+  public static class ConnectException extends RuntimeException {
+  }
+
+  public interface Service {
+    boolean connect();
+
+    boolean disconnect();
+  }
+
   public static Throwable getThrowable(CheckedRunnable runnable) {
     try {
       runnable.run();
@@ -33,10 +47,10 @@ public class Testing {
     return null;
   }
 
-  public static <T> T ignoreExceptions(Callable<T> callable) {
+  public static <T> T ignoreExceptions(CheckedSupplier<T> supplier) {
     try {
-      return callable.call();
-    } catch (Exception e) {
+      return supplier.get();
+    } catch (Throwable t) {
       return null;
     }
   }
@@ -59,25 +73,91 @@ public class Testing {
     new Thread(() -> ignoreExceptions(runnable)).start();
   }
 
-  public static void noop() {
-  }
-
   @SuppressWarnings("unchecked")
   public static <T extends CircuitState> T stateFor(CircuitBreaker breaker) {
     Field stateField;
     try {
       stateField = CircuitBreaker.class.getDeclaredField("state");
       stateField.setAccessible(true);
-      return (T) ((AtomicReference<T>) stateField.get(breaker)).get();
+      return ((AtomicReference<T>) stateField.get(breaker)).get();
     } catch (Exception e) {
-      return null;
+      throw new IllegalStateException("Could not get circuit breaker state");
     }
+  }
+
+  /**
+   * Returns a future that is completed with the {@code result} on the {@code executor}.
+   */
+  public static CompletableFuture<Object> futureResult(ScheduledExecutorService executor, Object result) {
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    executor.schedule(() -> future.complete(result), 0, TimeUnit.MILLISECONDS);
+    return future;
+  }
+
+  /**
+   * Returns a future that is completed with the {@code exception} on the {@code executor}.
+   */
+  public static CompletableFuture<Object> futureException(ScheduledExecutorService executor, Exception exception) {
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    executor.schedule(() -> future.completeExceptionally(exception), 0, TimeUnit.MILLISECONDS);
+    return future;
   }
 
   public static void sleep(long duration) {
     try {
       Thread.sleep(duration);
     } catch (InterruptedException ignore) {
+    }
+  }
+
+  /**
+   * Unwraps and throws ExecutionException and FailsafeException causes.
+   */
+  public static <T> T unwrapExceptions(CheckedSupplier<T> supplier) {
+    try {
+      return supplier.get();
+    } catch (ExecutionException e) {
+      sneakyThrow(e.getCause());
+      return null;
+    } catch (FailsafeException e) {
+      sneakyThrow(e.getCause() == null ? e : e.getCause());
+      return null;
+    } catch (RuntimeException | Error e) {
+      throw e;
+    } catch (Throwable t) {
+      throw new RuntimeException(t);
+    }
+  }
+
+  public static <T> RetryPolicy<T> withLogging(RetryPolicy<T> retryPolicy) {
+    return retryPolicy.onFailedAttempt(e -> System.out.println("Failed attempt"))
+      .onRetry(e -> System.out.println("Retrying"))
+      .onRetriesExceeded(e -> System.out.println("Retries exceeded"))
+      .onAbort(e -> System.out.println("Abort"))
+      .onSuccess(e -> System.out.println("Success"))
+      .onFailure(e -> System.out.println("Failure"));
+  }
+
+  public static <T> CircuitBreaker<T> withLogging(CircuitBreaker<T> circuitBreaker) {
+    return circuitBreaker.onOpen(() -> System.out.println("!! Opening"))
+      .onHalfOpen(() -> System.out.println("!! Half-opening"))
+      .onClose(() -> System.out.println("!! Closing"))
+      .onSuccess(e -> System.out.println("Success"))
+      .onFailure(e -> System.out.println("Failure"));
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <E extends Throwable> void sneakyThrow(Throwable e) throws E {
+    throw (E) e;
+  }
+
+  public static CircuitBreakerInternals getInternals(CircuitBreaker circuitBreaker) {
+    try {
+      Field internalsField = CircuitBreaker.class.getDeclaredField("internals");
+      internalsField.setAccessible(true);
+      return (CircuitBreakerInternals) internalsField.get(circuitBreaker);
+    } catch (Exception e) {
+      return null;
     }
   }
 }

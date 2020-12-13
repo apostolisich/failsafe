@@ -15,30 +15,51 @@
  */
 package net.jodah.failsafe.internal;
 
+import net.jodah.failsafe.CircuitBreaker;
 import net.jodah.failsafe.CircuitBreaker.State;
-import net.jodah.failsafe.util.Ratio;
+import net.jodah.failsafe.ExecutionContext;
+
+import java.time.Duration;
 
 /**
  * The state of a circuit.
- * 
+ *
  * @author Jonathan Halterman
  */
 public abstract class CircuitState {
-  static final Ratio ONE_OF_ONE = new Ratio(1, 1);
+  final CircuitBreaker breaker;
+  volatile CircuitStats stats;
 
-  public abstract boolean allowsExecution(CircuitBreakerStats stats);
+  CircuitState(CircuitBreaker breaker, CircuitStats stats) {
+    this.breaker = breaker;
+    this.stats = stats;
+  }
+
+  public abstract boolean allowsExecution();
+
+  public Duration getRemainingDelay() {
+    return Duration.ZERO;
+  }
+
+  public CircuitStats getStats() {
+    return stats;
+  }
 
   public abstract State getState();
 
-  public void recordFailure() {
+  public synchronized void recordFailure(ExecutionContext context) {
+    stats.recordFailure();
+    checkThreshold(context);
   }
 
-  public void recordSuccess() {
+  public synchronized void recordSuccess() {
+    stats.recordSuccess();
+    checkThreshold(null);
   }
 
-  public void setFailureThreshold(Ratio threshold) {
+  public void handleConfigChange() {
   }
 
-  public void setSuccessThreshold(Ratio threshold) {
+  void checkThreshold(ExecutionContext context) {
   }
 }
